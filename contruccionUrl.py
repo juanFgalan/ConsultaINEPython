@@ -1,8 +1,7 @@
-# Lo que he tenido que hacer es realizar una descarga automatizada para poder leer el csv completo y despues con pandas filtrar los datos que me interesan para poder tenerlos a mano no es posible usar la api directamente porque no permite eso
-
 import streamlit as st
 import pandas as pd
 import re
+from datetime import date
 
 # ----------------------------
 # Carga de tabla desde INE
@@ -34,11 +33,26 @@ def periodo_to_num(periodo_str):
     return -1
 
 # ----------------------------
-#  Interfaz Streamlit
+# Función para convertir periodos a fechas
+# ----------------------------
+def periodo_to_date(periodo_str):
+    s = str(periodo_str)
+    if re.match(r"^\d{4}$", s):
+        return date(int(s), 1, 1)
+    if re.match(r"^\d{4}M\d{1,2}$", s):
+        year, month = map(int, s.split("M"))
+        return date(year, month, 1)
+    if re.match(r"^\d{4}T\d$", s):
+        year, q = int(s[:4]), int(s[5])
+        month = (q - 1) * 3 + 1
+        return date(year, month, 1)
+    return None
+
+# ----------------------------
+# Interfaz Streamlit
 # ----------------------------
 st.title("📊 INE IPC - Consulta a Tablas")
 
-# Selección de tabla
 TABLAS = {
     50913: "IPC por provincias y subgrupos",
     50914: "IPC por comunidades autónomas",
@@ -49,7 +63,6 @@ TABLAS = {
     50919: "IPC por provincias, grupos ECOICOP y tipo de dato"
 }
 
-#tabla_id = st.selectbox("Selecciona tabla", list(range(50913, 50920)))
 # Selección de tabla
 tabla_id = st.selectbox(
     "Selecciona tabla",
@@ -60,32 +73,46 @@ tabla_id = st.selectbox(
 df = cargar_tabla(tabla_id)
 
 # ----------------------------
-# Filtro por rango de periodos
+# Filtro por rango de periodos con calendario
 # ----------------------------
 if "Periodo" in df.columns:
     periodos = df["Periodo"].dropna().unique()
-    periodos_sorted = sorted(periodos, key=periodo_to_num)
+    periodos_dates = [periodo_to_date(p) for p in periodos]
+    
+    # Ordenar por fecha
+    periodos_dates_sorted, periodos_sorted = zip(*sorted(zip(periodos_dates, periodos)))
 
-    start_idx, end_idx = st.select_slider(
-        "Selecciona rango de periodos",
-        options=list(range(len(periodos_sorted))),
-        value=(0, len(periodos_sorted)-1),
-        format_func=lambda x: periodos_sorted[x]
+    # Selector de rango de fechas
+    fechas_seleccionadas = st.date_input(
+        "Selecciona rango de fechas",
+        value=(periodos_dates_sorted[0], periodos_dates_sorted[-1])
     )
 
-    periodo_inicio = periodos_sorted[start_idx]
-    periodo_fin = periodos_sorted[end_idx]
+    # Normalizar selección a (inicio, fin)
+    if isinstance(fechas_seleccionadas, tuple) and len(fechas_seleccionadas) == 2:
+        fecha_inicio, fecha_fin = fechas_seleccionadas
+    elif isinstance(fechas_seleccionadas, date):
+        st.info("ℹ️ Has seleccionado una sola fecha. Se mostrarán solo los datos de ese día.")
+        fecha_inicio = fecha_fin = fechas_seleccionadas
+    else:
+        st.warning("⚠️ No se ha seleccionado ninguna fecha válida.")
+        st.stop()
 
+    # Filtrar según rango seleccionado
     def in_rango(p):
-        n = periodo_to_num(p)
-        return periodo_to_num(periodo_inicio) <= n <= periodo_to_num(periodo_fin)
-    
+        dt = periodo_to_date(p)
+        return dt is not None and fecha_inicio <= dt <= fecha_fin
+
     df = df[df["Periodo"].apply(in_rango)]
+
+    # Si no hay datos en el rango seleccionado
+    if df.empty:
+        st.warning("⚠️ No hay datos disponibles para el rango de fechas seleccionado.")
+        st.stop()
 
 # ----------------------------
 # Filtros dinámicos de categorías
 # ----------------------------
-#variable placeholder para cambiar nombre de los selectores en esp
 placeholderESP = " Selecciona una o varias opciones "
 
 # Filtrar por localización (Provincias o Comunidades)
@@ -96,11 +123,11 @@ for col in ["Comunidades y Ciudades Autónomas", "Provincias"]:
         break
 
 if loc_col:
-    loc_values = st.multiselect(loc_col, df[loc_col].dropna().unique(), placeholder = placeholderESP)
+    loc_values = st.multiselect(loc_col, df[loc_col].dropna().unique(), placeholder=placeholderESP)
     if loc_values:
         df = df[df[loc_col].isin(loc_values)]
 
-# Filtrar Subgrupos si existe (busca cualquier columna que contenga 'subgrupo')
+# Subgrupos
 subgrupo_col = None
 for col in df.columns:
     if "subgrupo" in col.lower():
@@ -108,11 +135,11 @@ for col in df.columns:
         break
 
 if subgrupo_col:
-    subgrupos = st.multiselect("Subgrupos", df[subgrupo_col].dropna().unique(), placeholder = placeholderESP)
+    subgrupos = st.multiselect("Subgrupos", df[subgrupo_col].dropna().unique(), placeholder=placeholderESP)
     if subgrupos:
         df = df[df[subgrupo_col].isin(subgrupos)]
 
-# Filtrar Grupos ECOICOP
+# Grupos ECOICOP
 grupo_col = None
 for col in df.columns:
     if "ecoicop" in col.lower():
@@ -120,11 +147,11 @@ for col in df.columns:
         break
 
 if grupo_col:
-    grupos = st.multiselect("Grupos ECOICOP", df[grupo_col].dropna().unique(), placeholder = placeholderESP)
+    grupos = st.multiselect("Grupos ECOICOP", df[grupo_col].dropna().unique(), placeholder=placeholderESP)
     if grupos:
         df = df[df[grupo_col].isin(grupos)]
 
-# Filtrar Tipo de dato si existe
+# Tipo de dato
 tipo_col = None
 for col in df.columns:
     if "tipo de dato" in col.lower():
@@ -132,11 +159,11 @@ for col in df.columns:
         break
 
 if tipo_col:
-    tipos = st.multiselect("Tipo de dato", df[tipo_col].dropna().unique(), placeholder = placeholderESP)
+    tipos = st.multiselect("Tipo de dato", df[tipo_col].dropna().unique(), placeholder=placeholderESP)
     if tipos:
         df = df[df[tipo_col].isin(tipos)]
 
-# Filtrar Rúbricas si existe
+# Rúbricas
 rubrica_col = None
 for col in df.columns:
     if "rúbricas" in col.lower():
@@ -144,11 +171,11 @@ for col in df.columns:
         break
 
 if rubrica_col:
-    rubricas = st.multiselect("Rúbricas", df[rubrica_col].dropna().unique(), placeholder = placeholderESP)
+    rubricas = st.multiselect("Rúbricas", df[rubrica_col].dropna().unique(), placeholder=placeholderESP)
     if rubricas:
         df = df[df[rubrica_col].isin(rubricas)]
 
-# Filtrar Grupos especiales si existe
+# Grupos especiales
 grupos_esp_col = None
 for col in df.columns:
     if "grupos especiales" in col.lower():
@@ -156,7 +183,7 @@ for col in df.columns:
         break
 
 if grupos_esp_col:
-    grupos_esp = st.multiselect("Grupos especiales", df[grupos_esp_col].dropna().unique(), placeholder = placeholderESP)
+    grupos_esp = st.multiselect("Grupos especiales", df[grupos_esp_col].dropna().unique(), placeholder=placeholderESP)
     if grupos_esp:
         df = df[df[grupos_esp_col].isin(grupos_esp)]
 
@@ -164,11 +191,9 @@ if grupos_esp_col:
 # Mostrar resultados
 # ----------------------------
 st.subheader("Datos filtrados")
-st.dataframe(df.head(100)) # mostar los 100 primeros
+st.dataframe(df.head(100))
 
-# ----------------------------
 # Botón de descarga
-# ----------------------------
 st.download_button(
     label="⬇️ Descargar datos filtrados",
     data=df.to_csv(index=False, sep=";"),
